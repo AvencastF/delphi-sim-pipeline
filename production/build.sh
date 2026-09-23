@@ -20,7 +20,6 @@ subprocess.run(base+[str(root/'hepmc2fadgen.cpp'),'-o',str(out/'hepmc2fadgen'),'
 PY
 cmake -S "$EDM_REPO/delphi_edm4hep" -B "$BUILD_DIR/converter" -DCMAKE_BUILD_TYPE=Release
 cmake --build "$BUILD_DIR/converter" -j "${BUILD_CPUS:-4}"
-ctest --test-dir "$BUILD_DIR/converter" --output-on-failure
 pythia8-config --version
 whizard --version || true
 

@@ -121,8 +121,7 @@ delphi-pythia8-pipeline/
 │
 ├── container/   run_singularity.sh / README.md    LOCAL run path: stock cmssw/el9 + CVMFS, no CERN net/Condor
 └── .github/workflows/
-    ├── docker.yml          builds & publishes the two images (delphi-sim + delphi-kk2f) to GHCR + Docker Hub
-    └── smoke-test.yml      100-event end-to-end smoke test on every push to main / PR
+    └── docker.yml          builds & publishes the two images (delphi-sim + delphi-kk2f) to GHCR + Docker Hub
 ```
 
 The **shared root-level** tools (`hepmc2fadgen.cpp`, `run_delsim_only.sh`) are baked into the
@@ -496,8 +495,8 @@ run_kk2f_pipeline.sh [num_events=3000] [job_id=$(date)] [output_dir=/work/output
   host-side `kk2f_gen_only.sh`; do not call the baked fixer/entrypoint until a new image is built.
 - Z-pole cross-section sanity targets: ISR ON ~30 nb / OFF ~42 nb.
 - All `condor_kk2f*.sub` use the **deprecated `universe=docker`** model and write to AFS
-  (`/afs/.../output`), not EOS. `condor_kk2f_test.sub` passes a stale `.tit` as the ISR-mode arg
-  (incompatible with the current "on"/"off" interface). KK2F large production is **deferred**.
+  (`/afs/.../output`), not EOS. The obsolete test submission file has been archived.
+  KK2F large production is **deferred**.
 
 ### 5.8 External HepMC3 — bring your own (`generators/hepmc3/`)
 
@@ -799,11 +798,6 @@ Two images, both built with **build context = repo ROOT** so they bake the share
 to `main` and on image-affecting PRs (PRs **build but don't push**). `:latest` is tagged **only on
 `main`**; every build also gets a commit-SHA tag. Docker Hub needs repo secrets `DOCKERHUB_USERNAME`
 + `DOCKERHUB_TOKEN`; GHCR uses the auto `GITHUB_TOKEN`.
-
-**Smoke test** (`.github/workflows/smoke-test.yml`): on every push to `main` / PR, mounts CVMFS,
-warms autofs, and runs a 100-event Pythia8 generation. **Mandatory** check: `./pythia8_generate 100`
-produces a non-empty `fort.26`. DELSIM (full pipeline) and the delphi-nanoaod ROOT conversion
-(ROOT 6.34.04; PHDST `T.FSEQ1` symlink workaround) are **continue-on-error**.
 
 **Refreshing the AFS `.sif`** (run on **lxplus** — needs apptainer):
 
