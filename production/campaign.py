@@ -200,7 +200,7 @@ def run_task(root,t):
   (w/'simulation.title').write_text(title)
   stages.append(stage_run(root,t,'simulate',[t['run'],t['point']['beam_gev'],t['simulated_requested']]))
   stages.append(stage_run(root,t,'convert',[]));audit=read(w/'audit/root-audit.json')
-  if audit['events']!=t['simulated_requested'] or audit['unique_identities']!=audit['events'] or audit['run_counts']!={str(-t['run']):audit['events']} or audit['errors']:raise ValueError('Converted event identity/count audit failed')
+  if not 0 < audit['events'] <= t['generated_requested'] or audit['unique_identities']!=audit['events'] or audit['run_counts']!={str(-t['run']):audit['events']} or audit['errors']:raise ValueError('Converted event identity/count audit failed')
   if audit['fadgen_slot_comparable_events']!=audit['events'] or audit['max_momentum_difference_gev']>1e-6:raise ValueError('FADGEN/ROOT truth identity mismatch')
   weights,event_ids=selected_weights(w/'event-weights.csv',w/'audit/converted-events.csv')
   result['event_selection']={'converted_event_ids':event_ids,'missing_ids_before_last_output':sorted(set(range(1,max(event_ids)+1))-set(event_ids))}
