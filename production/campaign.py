@@ -40,8 +40,13 @@ def prepare(a):
  if a.qos in ('shared','shared_interactive') and (a.nodes!=1 or a.workers>64):raise ValueError('Shared profile: one node and <=64 workers')
  if a.qos in ('debug','debug_preempt') and a.minutes>30:raise ValueError('Debug walltime <=30 minutes')
  if a.mode=='chain':
-  if any(p['year']!=1994 for p in selected) and not getattr(a,'detector_validation',False):raise ValueError('Other detector-year title/conditions not validated; xsec scans are allowed')
+  if any(p['year']!=1994 for p in selected) and not (getattr(a,'detector_validation',False) or getattr(a,'year_profile',False)):raise ValueError('Non-1994 chain requires explicit pinned year profile')
   if any(cat['processes'][n]['generator'] not in ('pythia8','bhwide') for n in names):raise ValueError('Generator detector boundary is not validated')
+ pinned=getattr(a,'detector_validation',False) or getattr(a,'year_profile',False)
+ if pinned:
+  from detector import profile
+  if a.mode!='chain':raise ValueError('Year profile requires chain mode')
+  for point in selected:profile(config/'detectors',point['detector'],point['year'])
  if getattr(a,'detector_validation',False):
   from detector import profile
   if a.mode!='chain':raise ValueError('Detector validation requires chain mode')
@@ -60,7 +65,7 @@ def prepare(a):
   (source/'sim/production/cards').mkdir(exist_ok=True)
   shutil.copy2(config/'catalog.json',source/'sim/production/catalog.json')
   shutil.copy2(config/'simulation-1994.title',source/'sim/production/simulation-1994.title')
-  if getattr(a,'detector_validation',False):shutil.copytree(config/'detectors',source/'sim/production/detectors')
+  if pinned:shutil.copytree(config/'detectors',source/'sim/production/detectors')
   for card_file in (config/'cards').iterdir():
    if card_file.is_file():shutil.copy2(card_file,source/'sim/production/cards'/card_file.name)
  source_manifest={str(p.relative_to(source)):digest(p) for p in source.rglob('*') if p.is_file()}
@@ -78,7 +83,7 @@ def prepare(a):
   if not isinstance(events,int) or events<=0:raise ValueError('Invalid workload event count')
   if seed>900000000 or run>999999:raise ValueError('Seed/run bounds exceeded')
   task={'id':f'{idx:06d}','process':name,'point':point,'generator':proc['generator'],'seed':seed,'run':run,'generated_requested':events,'simulated_requested':math.floor(events*site['simulation_fraction']) if a.mode=='chain' else 0,'chunk':request['chunk'],'mode':a.mode}
-  if getattr(a,'detector_validation',False):task['detector_profile']='pinned-validation'
+  if pinned:task['detector_profile']='pinned-validation' if getattr(a,'detector_validation',False) else 'pinned-production'
   if 'estimated_seconds' in request:task['estimated_seconds']=request['estimated_seconds']
   if a.mode=='chain' and task['simulated_requested']==0:raise ValueError('Simulation target is zero')
   card=(config/'cards'/proc['card']).read_text()
@@ -277,7 +282,7 @@ def status(a):
 
 def main():
  ap=argparse.ArgumentParser(description=__doc__);sub=ap.add_subparsers(dest='cmd');sub.required=True
- p=sub.add_parser('prepare');p.add_argument('--detector-validation',action='store_true',help='Bounded pinned year-profile validation; no production approval');p.add_argument('--name',required=True);p.add_argument('--output',required=True);p.add_argument('--site',required=True);p.add_argument('--workload',help='Explicit heterogeneous chunk requests JSON');p.add_argument('--config-dir',required=True,help='External catalog, cards and simulation title directory');p.add_argument('--edm-repo',required=True);p.add_argument('--mode',choices=['xsec','chain'],default='xsec');p.add_argument('--processes',required=True);p.add_argument('--points',default='1994_91p2');p.add_argument('--events',type=int,required=True);p.add_argument('--chunks',type=int,default=1);p.add_argument('--nodes',type=int,default=1);p.add_argument('--workers',type=int,default=4);p.add_argument('--minutes',type=int,default=30);p.add_argument('--qos',choices=['shared','regular','debug'],default='shared');p.add_argument('--seed-start',type=int,required=True);p.add_argument('--run-start',type=int,required=True);p.set_defaults(func=prepare)
+ p=sub.add_parser('prepare');p.add_argument('--year-profile',action='store_true',help='Explicit pinned year-profile chain routing');p.add_argument('--detector-validation',action='store_true',help='Bounded pinned year-profile validation; no production approval');p.add_argument('--name',required=True);p.add_argument('--output',required=True);p.add_argument('--site',required=True);p.add_argument('--workload',help='Explicit heterogeneous chunk requests JSON');p.add_argument('--config-dir',required=True,help='External catalog, cards and simulation title directory');p.add_argument('--edm-repo',required=True);p.add_argument('--mode',choices=['xsec','chain'],default='xsec');p.add_argument('--processes',required=True);p.add_argument('--points',default='1994_91p2');p.add_argument('--events',type=int,required=True);p.add_argument('--chunks',type=int,default=1);p.add_argument('--nodes',type=int,default=1);p.add_argument('--workers',type=int,default=4);p.add_argument('--minutes',type=int,default=30);p.add_argument('--qos',choices=['shared','regular','debug'],default='shared');p.add_argument('--seed-start',type=int,required=True);p.add_argument('--run-start',type=int,required=True);p.set_defaults(func=prepare)
  p=sub.add_parser('worker');p.add_argument('plan');p.set_defaults(func=worker)
  p=sub.add_parser('status');p.add_argument('plan');p.add_argument('--require-complete',action='store_true');p.set_defaults(func=status)
  a=ap.parse_args();a.func(a)
