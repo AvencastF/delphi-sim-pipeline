@@ -40,8 +40,16 @@ def prepare(a):
  if a.qos in ('shared','shared_interactive') and (a.nodes!=1 or a.workers>64):raise ValueError('Shared profile: one node and <=64 workers')
  if a.qos in ('debug','debug_preempt') and a.minutes>30:raise ValueError('Debug walltime <=30 minutes')
  if a.mode=='chain':
-  if any(p['year']!=1994 for p in selected):raise ValueError('Other detector-year title/conditions not validated; xsec scans are allowed')
+  if any(p['year']!=1994 for p in selected) and not getattr(a,'detector_validation',False):raise ValueError('Other detector-year title/conditions not validated; xsec scans are allowed')
   if any(cat['processes'][n]['generator'] not in ('pythia8','bhwide') for n in names):raise ValueError('Generator detector boundary is not validated')
+ if getattr(a,'detector_validation',False):
+  from detector import profile
+  if a.mode!='chain':raise ValueError('Detector validation requires chain mode')
+  for point in selected:profile(config/'detectors',point['detector'],point['year'])
+  requests=read(a.workload) if getattr(a,'workload',None) else [{'events':a.events} for _ in range(len(selected)*len(names)*a.chunks)]
+  if len(requests)>56 or any(not isinstance(r['events'],int) or not 0<r['events']<=100 for r in requests):raise ValueError('Detector validation is bounded to 56 chunks of at most 100 generated events')
+  site['detector_validation']=True;site['diagnostic_only']=True
+  site['retention']['remove_scratch_after_publish']=False
  root=P(a.output).resolve();root.mkdir(parents=True,exist_ok=False)
  edm=P(a.edm_repo).resolve();sim=HERE.parent
  # Freeze the actual working trees, including new production tooling. Avoid mutable code dependencies.
@@ -52,6 +60,7 @@ def prepare(a):
   (source/'sim/production/cards').mkdir(exist_ok=True)
   shutil.copy2(config/'catalog.json',source/'sim/production/catalog.json')
   shutil.copy2(config/'simulation-1994.title',source/'sim/production/simulation-1994.title')
+  if getattr(a,'detector_validation',False):shutil.copytree(config/'detectors',source/'sim/production/detectors')
   for card_file in (config/'cards').iterdir():
    if card_file.is_file():shutil.copy2(card_file,source/'sim/production/cards'/card_file.name)
  source_manifest={str(p.relative_to(source)):digest(p) for p in source.rglob('*') if p.is_file()}
@@ -69,6 +78,7 @@ def prepare(a):
   if not isinstance(events,int) or events<=0:raise ValueError('Invalid workload event count')
   if seed>900000000 or run>999999:raise ValueError('Seed/run bounds exceeded')
   task={'id':f'{idx:06d}','process':name,'point':point,'generator':proc['generator'],'seed':seed,'run':run,'generated_requested':events,'simulated_requested':math.floor(events*site['simulation_fraction']) if a.mode=='chain' else 0,'chunk':request['chunk'],'mode':a.mode}
+  if getattr(a,'detector_validation',False):task['detector_profile']='pinned-validation'
   if 'estimated_seconds' in request:task['estimated_seconds']=request['estimated_seconds']
   if a.mode=='chain' and task['simulated_requested']==0:raise ValueError('Simulation target is zero')
   card=(config/'cards'/proc['card']).read_text()
@@ -193,12 +203,17 @@ def run_task(root,t):
  if t['mode']=='chain':
   stages.append(stage_run(root,t,'fadgen',[]))
   if fadgen_count(w/'my_events.fadgen')!=g['generated']:raise ValueError('Generator/FADGEN count mismatch')
-  title=(root/'source/sim/production/simulation-1994.title').read_text()
-  title=re.sub(r'^NEVMAX\s+\d+',f'NEVMAX {t["simulated_requested"]}',title,flags=re.M)
-  title=re.sub(r'^IRUN\s+-?\d+',f'IRUN -{t["run"]}',title,flags=re.M)
-  title=re.sub(r'^EBEAM\s+\S+',f'EBEAM {t["point"]["beam_gev"]:.6f}',title,flags=re.M)
-  (w/'simulation.title').write_text(title)
-  stages.append(stage_run(root,t,'simulate',[t['run'],t['point']['beam_gev'],t['simulated_requested']]))
+  if t.get('detector_profile'):
+   from detector import render
+   render(root/'source/sim/production/detectors',t,w)
+   stages.append(stage_run(root,t,'simulate',[t['run'],t['point']['beam_gev'],t['simulated_requested'],t['point']['detector']]))
+  else:
+   title=(root/'source/sim/production/simulation-1994.title').read_text()
+   title=re.sub(r'^NEVMAX\s+\d+',f'NEVMAX {t["simulated_requested"]}',title,flags=re.M)
+   title=re.sub(r'^IRUN\s+-?\d+',f'IRUN -{t["run"]}',title,flags=re.M)
+   title=re.sub(r'^EBEAM\s+\S+',f'EBEAM {t["point"]["beam_gev"]:.6f}',title,flags=re.M)
+   (w/'simulation.title').write_text(title)
+   stages.append(stage_run(root,t,'simulate',[t['run'],t['point']['beam_gev'],t['simulated_requested']]))
   stages.append(stage_run(root,t,'convert',[]));audit=read(w/'audit/root-audit.json')
   if not 0 < audit['events'] <= t['generated_requested'] or audit['unique_identities']!=audit['events'] or audit['run_counts']!={str(-t['run']):audit['events']} or audit['errors']:raise ValueError('Converted event identity/count audit failed')
   if audit['fadgen_slot_comparable_events']!=audit['events'] or audit['max_momentum_difference_gev']>1e-6:raise ValueError('FADGEN/ROOT truth identity mismatch')
@@ -208,6 +223,9 @@ def run_task(root,t):
   result['counts']={'requested_generated':t['generated_requested'],'generated':g['generated'],'simulation_requested':t['simulated_requested'],'reconstructed':audit['events'],'converted':audit['events']}
   result['simulated_sumw']=sum(weights);result['simulated_sumw2']=sum(x*x for x in weights)
   result['outputs']={name:{'sha256':digest(w/name),'bytes':(w/name).stat().st_size} for name in set(['simana.ldst','events.edm4hep.root','longdst.des','simulation.title','event-weights.csv','events.hepmc3']+campaign_plan(root)['site'].get('retained_files',[]))}
+ if t.get('detector_profile') and t['mode']=='chain':
+  for name in ('detector-profile.json','detector-install.json','reconstruction.title'):
+   result['outputs'][name]={'sha256':digest(w/name),'bytes':(w/name).stat().st_size}
  write(root/'results'/(t['id']+'.json'),result)
 
 def verify_inputs(root,p):
@@ -259,7 +277,7 @@ def status(a):
 
 def main():
  ap=argparse.ArgumentParser(description=__doc__);sub=ap.add_subparsers(dest='cmd');sub.required=True
- p=sub.add_parser('prepare');p.add_argument('--name',required=True);p.add_argument('--output',required=True);p.add_argument('--site',required=True);p.add_argument('--workload',help='Explicit heterogeneous chunk requests JSON');p.add_argument('--config-dir',required=True,help='External catalog, cards and simulation title directory');p.add_argument('--edm-repo',required=True);p.add_argument('--mode',choices=['xsec','chain'],default='xsec');p.add_argument('--processes',required=True);p.add_argument('--points',default='1994_91p2');p.add_argument('--events',type=int,required=True);p.add_argument('--chunks',type=int,default=1);p.add_argument('--nodes',type=int,default=1);p.add_argument('--workers',type=int,default=4);p.add_argument('--minutes',type=int,default=30);p.add_argument('--qos',choices=['shared','regular','debug'],default='shared');p.add_argument('--seed-start',type=int,required=True);p.add_argument('--run-start',type=int,required=True);p.set_defaults(func=prepare)
+ p=sub.add_parser('prepare');p.add_argument('--detector-validation',action='store_true',help='Bounded pinned year-profile validation; no production approval');p.add_argument('--name',required=True);p.add_argument('--output',required=True);p.add_argument('--site',required=True);p.add_argument('--workload',help='Explicit heterogeneous chunk requests JSON');p.add_argument('--config-dir',required=True,help='External catalog, cards and simulation title directory');p.add_argument('--edm-repo',required=True);p.add_argument('--mode',choices=['xsec','chain'],default='xsec');p.add_argument('--processes',required=True);p.add_argument('--points',default='1994_91p2');p.add_argument('--events',type=int,required=True);p.add_argument('--chunks',type=int,default=1);p.add_argument('--nodes',type=int,default=1);p.add_argument('--workers',type=int,default=4);p.add_argument('--minutes',type=int,default=30);p.add_argument('--qos',choices=['shared','regular','debug'],default='shared');p.add_argument('--seed-start',type=int,required=True);p.add_argument('--run-start',type=int,required=True);p.set_defaults(func=prepare)
  p=sub.add_parser('worker');p.add_argument('plan');p.set_defaults(func=worker)
  p=sub.add_parser('status');p.add_argument('plan');p.add_argument('--require-complete',action='store_true');p.set_defaults(func=status)
  a=ap.parse_args();a.func(a)
