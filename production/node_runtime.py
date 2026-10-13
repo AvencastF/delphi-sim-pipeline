@@ -18,7 +18,7 @@ def container_command(root, plan, workers):
     host = socket.gethostname()
     cpus = ','.join(str(n) for n in sorted(os.sched_getaffinity(0)))
     cmd = ['podman-hpc', 'run', '--rm', '--network=none', '--init',
-           '--name', 'long-{}-node-{}'.format(os.environ['SLURM_JOB_ID'], host),
+           '--name', 'long-{}-node-{}'.format(os.environ['SLURM_JOB_ID'], host)+(('-'+root.parent.name) if site.get('detector_validation') else ''),
            '--hostname', host, '--cpuset-cpus='+cpus, '--entrypoint', '/usr/bin/python3',
            '-v', '/cvmfs:/cvmfs:ro', '-v', str(root)+':'+str(root)+':ro',
            '-v', str(root/'source/sim')+':/sim:ro',

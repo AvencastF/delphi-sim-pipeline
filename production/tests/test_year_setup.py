@@ -71,6 +71,15 @@ class YearSetupTests(unittest.TestCase):
     root=Path(tmp)/'campaign'
     with self.assertRaises(ValueError):self.prepare(self.args(root,validation,events=events))
     self.assertFalse(root.exists())
+ def test_validation_containers_are_unique_within_interactive_allocation(self):
+  site=campaign.read(ROOT/'long_production/configs/production.json')
+  with patch.dict(campaign.os.environ,{'SLURM_JOB_ID':'123'}),patch.object(node_runtime.os,'sched_getaffinity',return_value={0,1},create=True),patch.object(node_runtime.socket,'gethostname',return_value='nid-test'):
+   def name(point):
+    cmd=node_runtime.container_command(Path('/scratch')/point/'validation',{'site':site},7)
+    return cmd[cmd.index('--name')+1]
+   self.assertEqual(name('1994_91p2'),'long-123-node-nid-test')
+   site['detector_validation']=True
+   self.assertNotEqual(name('1993_91p2'),name('1995_91p2'))
  def test_validation_claims_work_after_environment_setup(self):
   p=fleet.plan(ROOT/'long_production/configs/points/1993_91p2.json',detector_validation=True)
   # Thirty-minute job after five minutes of container/environment setup.
