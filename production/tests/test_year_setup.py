@@ -84,11 +84,13 @@ class YearSetupTests(unittest.TestCase):
   ordinary=fleet.plan(ROOT/'long_production/configs/points/1994_91p2.json')
   self.assertEqual(ordinary['site']['worker_finish_reserve_seconds'],1800)
   self.assertEqual(ordinary['site']['stage_timeout_seconds'],7200)
+  self.assertEqual(ordinary['config']['resources']['qos'],'regular')
  def test_fleet_plans_and_publication_guard(self):
   for point in campaign.read(ROOT/'long_production/configs/catalog.json')['points']:
    p=fleet.plan(ROOT/'long_production/configs/points'/f"{point['id']}.json",detector_validation=True)
    self.assertEqual(p['generated_total'],700);self.assertEqual(p['simulation_target_total'],630)
    self.assertEqual(p['blockers'],[])
+   self.assertEqual(p['config']['resources']['qos'],'shared')
   with tempfile.TemporaryDirectory() as tmp:
    root=Path(tmp);fleet.write(root/'fleet.json',{'site':{'detector_validation':True}});fleet.write(root/'plan.json',{'site':{'detector_validation':True}})
    with patch.object(fleet,'require_compute'),self.assertRaisesRegex(ValueError,'publication is disabled'):fleet.publish_job(root,0)
