@@ -212,6 +212,9 @@ def run_task(root,t):
    from detector import render
    render(root/'source/sim/production/detectors',t,w)
    stages.append(stage_run(root,t,'simulate',[t['run'],t['point']['beam_gev'],t['simulated_requested'],t['point']['detector']]))
+   from detector import check_simulation_log
+   log_check=check_simulation_log(root/'source/sim/production/detectors',t,root/'logs'/(t['id']+'-simulate.log'))
+   if log_check:result['detector_log_check']=log_check
   else:
    title=(root/'source/sim/production/simulation-1994.title').read_text()
    title=re.sub(r'^NEVMAX\s+\d+',f'NEVMAX {t["simulated_requested"]}',title,flags=re.M)

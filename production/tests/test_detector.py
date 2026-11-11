@@ -35,12 +35,59 @@ class DetectorTests(unittest.TestCase):
                 # Every original line except the explicitly allowed runtime overrides
                 # must survive verbatim, including all geometry/database requests.
                 sim_keys = set(json.loads((Path(tmp) / 'detector-profile.json').read_text())['overrides'])
-                for name, rendered, keys in [(p['simulation_card'], sim, sim_keys),
-                                            ('delana.tit', reco, {'NEVMAX', 'ECMLEP', 'LABO', 'MBLIMI'})]:
-                    source = (PROFILES / point['detector'] / name).read_text()
+                # The simulation reference is the official card plus only its documented patch.
+                for source, rendered, keys in [(detector.simulation_card(PROFILES, point['detector'], p), sim, sim_keys),
+                                               ((PROFILES / point['detector'] / 'delana.tit').read_text(), reco,
+                                                {'NEVMAX', 'ECMLEP', 'LABO', 'MBLIMI'})]:
                     retained = lambda text: [line for line in text.splitlines()
                         if line.strip() and not any(re.match(r'^' + key + r'\s+', line) for key in keys)]
                     self.assertEqual(retained(source), retained(rendered))
+
+    def test_only_1992_hpc_calibration_date_is_patched(self):
+        manifest = json.loads((PROFILES / 'manifest.json').read_text())['profiles']
+        self.assertEqual([v for v in manifest if 'simulation_card_patch' in manifest[v]], ['v92e'])
+        for version, year in [('v93d', 1993), ('v94c', 1994), ('v95d', 1995)]:
+            p = detector.profile(PROFILES, version, year)
+            self.assertEqual(detector.simulation_card(PROFILES, version, p),
+                             (PROFILES / version / p['simulation_card']).read_text())
+        p = detector.profile(PROFILES, 'v92e', 1992)
+        official = (PROFILES / 'v92e/s92t94_liq.tit').read_text().split('\n')
+        patched = detector.simulation_card(PROFILES, 'v92e', p).split('\n')
+        self.assertEqual(detector.sha(PROFILES / 'v92e/s92t94_liq.tit'), p['simulation_card_patch']['official_sha256'])
+        self.assertEqual([i + 1 for i, (a, b) in enumerate(zip(official, patched)) if a != b], [180])
+        self.assertEqual(len(official), len(patched))
+        self.assertIn("'HPC '      921101.", patched[179])
+        self.assertEqual(patched[151], official[151])  # DDMLG geometry date stays 900315.
+        self.assertIn("'HPC '      900315.", patched[151])
+
+    def test_tampered_card_patch_rejected(self):
+        for change, message in [({'old': "       'HPC '      900316.  120000.      2.      900706.    235959."}, 'anchor'),
+                                ({'line': 152}, 'anchor'), ({'block': 'DDMLG'}, 'anchor'),
+                                ({'patched_sha256': '0' * 64}, 'patched hash'),
+                                ({'official_sha256': '0' * 64}, 'does not apply')]:
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                shutil.copytree(PROFILES / 'v92e', root / 'v92e')
+                manifest = json.loads((PROFILES / 'manifest.json').read_text())
+                manifest['profiles']['v92e']['simulation_card_patch'].update(change)
+                (root / 'manifest.json').write_text(json.dumps(manifest))
+                with self.assertRaisesRegex(ValueError, message):
+                    detector.render(root, {'point': {'detector': 'v92e', 'year': 1992, 'beam_gev': 45.6,
+                                                     'ecm_gev': 91.2}, 'simulated_requested': 9, 'run': 1}, tmp)
+
+    def test_simulate_log_check(self):
+        task = {'point': {'detector': 'v92e', 'year': 1992}}
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / 'simulate.log'
+            line = ' H P C - "chamber voltage" set to {}V, "threshold" to {}\n'
+            log.write_text('header\n' + line.format('1200.', '-3.0') * 2)
+            self.assertEqual(detector.check_simulation_log(PROFILES, task, log)['found'], [['1200.', '-3.0']])
+            for text in ('no HPC line\n', line.format('1300.', '-1.0'),
+                         line.format('1200.', '-3.0') + line.format('1300.', '-1.0')):
+                log.write_text(text)
+                with self.subTest(text=text), self.assertRaisesRegex(ValueError, 'patched detector mode'):
+                    detector.check_simulation_log(PROFILES, task, log)
+            self.assertIsNone(detector.check_simulation_log(PROFILES, {'point': {'detector': 'v94c', 'year': 1994}}, log))
 
     def test_invalid_year_and_version_rejected(self):
         for version, year in [('v94c', 1993), ('v92e', 1991), ('unknown', 1994)]:
