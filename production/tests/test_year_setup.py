@@ -54,6 +54,7 @@ class YearSetupTests(unittest.TestCase):
     def stage(root,task,name,args):
      w=root/'work'/task['id']
      if name in ('generate','bhwide'):campaign.write(w/'generation.json',dict(generated=100,sigma_mb=1,sigma_error_mb=0,sumw=100,sumw2=100))
+     if name=='fadgen':self.assertEqual(args,['--tau-copies-as-documentation'] if t['point']['detector']=='v92e' else [])
      if name=='simulate':
       self.assertEqual(args,[t['run'],t['point']['beam_gev'],90,t['point']['detector']])
       self.assertIn('ECMLEP '+energy,(w/'reconstruction.title').read_text())

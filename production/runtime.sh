@@ -22,7 +22,8 @@ case "$stage" in
   whizard card.sin
   ;;
  fadgen)
-  /build/hepmc2fadgen events.hepmc3 my_events.fadgen
+  # Options come from the detector profile (manifest fadgen_options); none outside 1992.
+  /build/hepmc2fadgen "${@:2}" events.hepmc3 my_events.fadgen
   ;;
  simulate)
   export DELPHI_INSTALL_DIR=/delphi

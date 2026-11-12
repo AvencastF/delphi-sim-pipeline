@@ -28,28 +28,37 @@ def profile(root, version, year):
     return p
 
 
-def simulation_card(root, version, p):
-    """Official card text, plus the manifest's documented one-line patch if present.
+def enclosing_block(lines, i):
+    """Header of the card block holding line i (a bare keyword line above it with no
+    blank line in between, e.g. DDMLC), or None for a top-level card such as VTAU."""
+    for line in reversed(lines[:i]):
+        if not line.strip():
+            return None
+        if re.fullmatch(r'[A-Z][A-Z0-9]*', line.strip()):
+            return line.strip()
+    return None
 
-    The pinned file stays byte-identical to the CERN source; the patch is anchored by
-    line number, exact old text and enclosing card block, and its result hash is pinned.
+
+def simulation_card(root, version, p):
+    """Official card text, plus the manifest's documented patch edits if present.
+
+    The pinned file stays byte-identical to the CERN source. Each edit replaces one
+    line, anchored by its official line number, exact old text and enclosing block
+    (null for a top-level card); its new text may add lines. Edits are applied from
+    the bottom up, so every anchor refers to the official numbering, and the hash of
+    the result is pinned.
     """
     text = (Path(root) / version / p['simulation_card']).read_text()
     patch = p.get('simulation_card_patch')
     if not patch:
         return text
     lines = text.split('\n')
-    i = patch['line'] - 1
-    anchor = 'Simulation card patch anchor not found: ' + patch['block'] + ' line ' + str(patch['line'])
-    if not 0 < i < len(lines) or lines[i] != patch['old']:
-        raise ValueError(anchor)
-    # The enclosing block is the nearest header above the line, with no blank line in between.
-    start = i - 1
-    while start > 0 and lines[start].strip() and lines[start].strip() != patch['block']:
-        start -= 1
-    if lines[start].strip() != patch['block']:
-        raise ValueError(anchor)
-    lines[i] = patch['new']
+    for edit in sorted(patch['edits'], key=lambda e: e['line'], reverse=True):
+        i = edit['line'] - 1
+        anchor = 'Simulation card patch anchor not found: ' + str(edit['block']) + ' line ' + str(edit['line'])
+        if not 0 < i < len(lines) or lines[i] != edit['old'] or enclosing_block(lines, i) != edit['block']:
+            raise ValueError(anchor)
+        lines[i:i + 1] = edit['new'].split('\n')
     text = '\n'.join(lines)
     if hashlib.sha256(text.encode()).hexdigest() != patch['patched_sha256']:
         raise ValueError('Patched simulation card differs from pinned patched hash')
@@ -57,16 +66,27 @@ def simulation_card(root, version, p):
 
 
 def check_simulation_log(root, task, log):
-    """Require the log signature that shows a card patch took effect; None without a check."""
+    """Require the log signature of every card patch edit that has one; None without checks."""
     point = task['point']
-    check = (profile(root, point['detector'], point['year']).get('simulation_card_patch') or {}).get('simulate_log_check')
-    if not check:
+    patch = profile(root, point['detector'], point['year']).get('simulation_card_patch') or {}
+    checks = [e['simulate_log_check'] for e in patch.get('edits', []) if e.get('simulate_log_check')]
+    if not checks:
         return None
-    found = sorted(set(re.findall(check['pattern'], Path(log).read_text(errors='replace'))))
-    found = [list(x) if isinstance(x, tuple) else [x] for x in found]
-    if found != [check['expected']]:
-        raise ValueError('Simulate log does not show the patched detector mode: ' + json.dumps(found))
-    return dict(check, found=found, log_sha256=sha(log))
+    text = Path(log).read_text(errors='replace')
+    results = []
+    for check in checks:
+        found = sorted(set(re.findall(check['pattern'], text)))
+        found = [list(x) if isinstance(x, tuple) else [x] for x in found]
+        if found != [check['expected']]:
+            raise ValueError('Simulate log does not show the patched detector mode: ' + json.dumps(found))
+        results.append(dict(check, found=found))
+    return {'checks': results, 'log_sha256': sha(log)}
+
+
+def fadgen_args(root, task):
+    """Extra hepmc2fadgen options this detector profile requires (none for most years)."""
+    point = task['point']
+    return list((profile(root, point['detector'], point['year']).get('fadgen_options') or {}).get('args', []))
 
 
 def replace_card(text, key, value, insert=False):

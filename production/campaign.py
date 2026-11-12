@@ -206,7 +206,11 @@ def run_task(root,t):
  if g['generated']!=t['generated_requested'] or not all(math.isfinite(g[k]) for k in ('sigma_mb','sigma_error_mb','sumw','sumw2')) or g['sigma_mb']<=0 or g['sigma_error_mb']<0:raise ValueError('Invalid generator summary')
  result={'task':t,'generation':g,'sigma_pb':g['sigma_mb']*1e9,'sigma_error_pb':g['sigma_error_mb']*1e9,'stages':stages,'job_id':os.environ['SLURM_JOB_ID'],'node':socket.gethostname()}
  if t['mode']=='chain':
-  stages.append(stage_run(root,t,'fadgen',[]))
+  fadgen=[]
+  if t.get('detector_profile'):
+   from detector import fadgen_args
+   fadgen=fadgen_args(root/'source/sim/production/detectors',t)
+  stages.append(stage_run(root,t,'fadgen',fadgen))
   if fadgen_count(w/'my_events.fadgen')!=g['generated']:raise ValueError('Generator/FADGEN count mismatch')
   if t.get('detector_profile'):
    from detector import render

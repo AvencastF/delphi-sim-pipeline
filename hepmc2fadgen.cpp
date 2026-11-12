@@ -25,6 +25,18 @@
 //  * Status is derived from the GENERIC HepMC3 status (1 final / 2 decayed /
 //    4 beam) + PDG-based V0 tagging — NOT from any Pythia-specific status code,
 //    so the same tool works for Sherpa/Whizard/etc.
+//  * Option --tau-copies-as-documentation (DELSIM v92e, 1992 only; the detector
+//    profile passes it). v92e has no LUDECV: SXSDK redraws a flight segment for
+//    EVERY K=11 entry with daughters, so the tau -> tau(+gamma) FSR/recoil copies
+//    of the generator record each added a segment (1992 mean decay length 1.50x
+//    the generator's) and FSR photons started at a copy's displaced vertex. With
+//    the option, a tau whose kept daughters include a tau of the same PDG id is
+//    written K=21: v92e keeps the K=21 SH bank as a parent link but lifts no ST
+//    bank for it (simcra36 SXLUSH C=54, SXSHST C=68), so its daughters hang from
+//    the nearest ancestor with a decay vertex (the primary one for Z -> tau tau)
+//    and only the last tau of each chain decays. The momenta, mother/daughter
+//    links and vertices written are unchanged. Off by default: v93d+ take the
+//    decay length from V with LUDECV and must stay byte-identical.
 //
 // Closure target: for Pythia8 input this should reproduce EventWriter's fort.26
 // (final-state set + decay tree), modulo benign intermediate status-code labels.
@@ -75,7 +87,10 @@ static bool isValidParticle(const ConstGenParticlePtr& p) {
 // become status 4 so DELSIM decays them (matches EventWriter's V0 handling).
 //   HepMC3 1 (final) -> 1 (V0 set -> 4) ; generator-decayed hadron/tau with a kept
 //   daughter -> 11 ; everything else (beam, partons, strings, Z/W, doc) -> 21.
-static int lujetsStatus(int hepmc_status, int pdg, bool has_valid_daughters) {
+//   documentation_copy (only with --tau-copies-as-documentation): a decayed entry
+//   that is a generator copy of its own daughter -> 21.
+static int lujetsStatus(int hepmc_status, int pdg, bool has_valid_daughters,
+                        bool documentation_copy = false) {
     // Final-state -> K(,1)=1 (DELSIM tracks it); a V0 that survives to final
     // state -> K(,1)=4 (DELSIM decays it).
     //
@@ -99,14 +114,15 @@ static int lujetsStatus(int hepmc_status, int pdg, bool has_valid_daughters) {
     // beams (HepMC3 status 4) and documentation entries stay 21.
     const int a = std::abs(pdg);
     const bool hadron_or_tau = (a >= 100 && kV0AbsPdg.count(a) == 0) || a == 15;
-    if (hepmc_status != 4 && hadron_or_tau && has_valid_daughters) return 11;
+    if (hepmc_status != 4 && hadron_or_tau && has_valid_daughters && !documentation_copy) return 11;
     return 21;
 }
 
 class FadgenWriter {
 public:
-    explicit FadgenWriter(const std::string& filename)
-        : events_written_(0), n_k11_(0), n_k11_displaced_(0) {
+    FadgenWriter(const std::string& filename, bool tau_copies_as_documentation)
+        : tau_copies_as_documentation_(tau_copies_as_documentation),
+          events_written_(0), n_k11_(0), n_k11_displaced_(0), n_tau_copies_(0) {
         out_.open(filename, std::ios::binary);
         if (!out_) { std::cerr << "Error opening " << filename << std::endl; std::exit(1); }
     }
@@ -118,6 +134,9 @@ public:
             std::cout << "Decayed hadrons tagged K(,1)=11: " << n_k11_
                       << ", of which with a displaced first daughter in the generator record: "
                       << n_k11_displaced_ << std::endl;
+            if (tau_copies_as_documentation_)
+                std::cout << "Tau copies (a same-id tau among the daughters) tagged K(,1)=21: "
+                          << n_tau_copies_ << std::endl;
             if (n_k11_ > 0 && n_k11_displaced_ == 0)
                 std::cerr << "WARNING: the generator record carries NO decay-vertex displacement "
                           << "(all V identical along decay chains). With LUDECV TRUE, DELSIM would "
@@ -193,6 +212,17 @@ public:
             return {first, last};
         };
 
+        // A tau whose kept daughters include a tau of the same PDG id is a
+        // generator copy (FSR/recoil), not the decaying tau of its chain.
+        auto isTauCopy = [&](const ConstGenParticlePtr& p) -> bool {
+            if (std::abs(p->pid()) != 15) return false;
+            ConstGenVertexPtr ev = p->end_vertex();
+            if (!ev) return false;
+            for (const auto& d : ev->particles_out())
+                if (d->pid() == p->pid() && idToOut.count(d->id()) > 0) return true;
+            return false;
+        };
+
         // Require >= 2 final-state (status 1 or 4) particles, like EventWriter.
         int nFinal = 0;
         for (const auto& p : valid) {
@@ -213,7 +243,9 @@ public:
         for (const auto& p : valid) {
             int k[5];
             const std::pair<int,int> kd = findValidDaughters(p);
-            k[0] = lujetsStatus(p->status(), p->pid(), kd.first != 0);
+            const bool tau_copy = tau_copies_as_documentation_ && isTauCopy(p);
+            k[0] = lujetsStatus(p->status(), p->pid(), kd.first != 0, tau_copy);
+            if (tau_copy) ++n_tau_copies_;
             k[1] = p->pid();
             k[2] = findValidMother(p);
             k[3] = kd.first;
@@ -274,18 +306,31 @@ private:
     }
 
     std::ofstream out_;
+    const bool tau_copies_as_documentation_;
     int events_written_;
     long n_k11_;            // decayed hadrons written with K(,1)=11
     long n_k11_displaced_;  // ... whose first daughter's production vertex differs from theirs
+    long n_tau_copies_;     // tau copies written K(,1)=21 (option on only)
 };
 
 int main(int argc, char* argv[]) {
-    if (argc < 2) {
-        std::cerr << "Usage: " << argv[0] << " <input.hepmc> [output=fort.26]\n";
+    bool tau_copies_as_documentation = false;
+    std::vector<std::string> positional;
+    for (int i = 1; i < argc; ++i) {
+        const std::string arg = argv[i];
+        if (arg == "--tau-copies-as-documentation") tau_copies_as_documentation = true;
+        else if (arg.rfind("--", 0) == 0) {
+            std::cerr << "Unknown option " << arg << std::endl;
+            return 1;
+        } else positional.push_back(arg);
+    }
+    if (positional.empty() || positional.size() > 2) {
+        std::cerr << "Usage: " << argv[0]
+                  << " [--tau-copies-as-documentation] <input.hepmc> [output=fort.26]\n";
         return 1;
     }
-    const std::string infile = argv[1];
-    const std::string outfile = (argc > 2) ? argv[2] : "fort.26";
+    const std::string infile = positional[0];
+    const std::string outfile = (positional.size() > 1) ? positional[1] : "fort.26";
 
     // deduce_reader auto-detects the HepMC3 ASCII variant so the converter stays
     // generator-agnostic: Asciiv3 (Pythia8, Sherpa) and IO_GenEvent/HepMC2 (Herwig)
@@ -296,7 +341,7 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    FadgenWriter writer(outfile);
+    FadgenWriter writer(outfile, tau_copies_as_documentation);
 
     int read = 0, accepted = 0;
     while (!reader->failed()) {

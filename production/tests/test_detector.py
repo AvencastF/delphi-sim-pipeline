@@ -43,7 +43,7 @@ class DetectorTests(unittest.TestCase):
                         if line.strip() and not any(re.match(r'^' + key + r'\s+', line) for key in keys)]
                     self.assertEqual(retained(source), retained(rendered))
 
-    def test_only_1992_hpc_calibration_date_is_patched(self):
+    def test_only_1992_card_is_patched_hpc_date_and_tau_lifetime(self):
         manifest = json.loads((PROFILES / 'manifest.json').read_text())['profiles']
         self.assertEqual([v for v in manifest if 'simulation_card_patch' in manifest[v]], ['v92e'])
         for version, year in [('v93d', 1993), ('v94c', 1994), ('v95d', 1995)]:
@@ -54,22 +54,28 @@ class DetectorTests(unittest.TestCase):
         official = (PROFILES / 'v92e/s92t94_liq.tit').read_text().split('\n')
         patched = detector.simulation_card(PROFILES, 'v92e', p).split('\n')
         self.assertEqual(detector.sha(PROFILES / 'v92e/s92t94_liq.tit'), p['simulation_card_patch']['official_sha256'])
-        self.assertEqual([i + 1 for i, (a, b) in enumerate(zip(official, patched)) if a != b], [180])
-        self.assertEqual(len(official), len(patched))
-        self.assertIn("'HPC '      921101.", patched[179])
-        self.assertEqual(patched[151], official[151])  # DDMLG geometry date stays 900315.
-        self.assertIn("'HPC '      900315.", patched[151])
+        # One inserted line after official line 23; everything else verbatim except the HPC date (official 180).
+        self.assertEqual(len(patched), len(official) + 1)
+        self.assertEqual(patched[:23], official[:23])
+        self.assertEqual(patched[23], 'VTAU 10=2.9057E-13')
+        rest = patched[24:]
+        self.assertEqual([i + 1 for i, (a, b) in enumerate(zip(official[23:], rest)) if a != b], [180 - 23])
+        self.assertIn("'HPC '      921101.", rest[180 - 24])
+        self.assertEqual(rest[151 - 23], official[151])  # DDMLG geometry date stays 900315.
+        self.assertIn("'HPC '      900315.", official[151])
 
-    def test_tampered_card_patch_rejected(self):
-        for change, message in [({'old': "       'HPC '      900316.  120000.      2.      900706.    235959."}, 'anchor'),
-                                ({'line': 152}, 'anchor'), ({'block': 'DDMLG'}, 'anchor'),
-                                ({'patched_sha256': '0' * 64}, 'patched hash'),
-                                ({'official_sha256': '0' * 64}, 'does not apply')]:
-            with self.subTest(change=change), tempfile.TemporaryDirectory() as tmp:
+    def test_card_edits_need_official_anchors(self):
+        hpc = {'old': "       'HPC '      900316.  120000.      2.      900706.    235959."}
+        for index, change, message in [(0, hpc, 'anchor'), (0, {'line': 152}, 'anchor'), (0, {'block': 'DDMLG'}, 'anchor'),
+                                       (1, {'block': 'DDMLC'}, 'anchor'), (1, {'line': 22}, 'anchor'),
+                                       (None, {'patched_sha256': '0' * 64}, 'patched hash'),
+                                       (None, {'official_sha256': '0' * 64}, 'does not apply')]:
+            with self.subTest(index=index, change=change), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
                 shutil.copytree(PROFILES / 'v92e', root / 'v92e')
                 manifest = json.loads((PROFILES / 'manifest.json').read_text())
-                manifest['profiles']['v92e']['simulation_card_patch'].update(change)
+                patch = manifest['profiles']['v92e']['simulation_card_patch']
+                (patch if index is None else patch['edits'][index]).update(change)
                 (root / 'manifest.json').write_text(json.dumps(manifest))
                 with self.assertRaisesRegex(ValueError, message):
                     detector.render(root, {'point': {'detector': 'v92e', 'year': 1992, 'beam_gev': 45.6,
@@ -77,17 +83,30 @@ class DetectorTests(unittest.TestCase):
 
     def test_simulate_log_check(self):
         task = {'point': {'detector': 'v92e', 'year': 1992}}
+        hpc = ' H P C - "chamber voltage" set to {}V, "threshold" to {}\n'
+        vtau = ' ***** DATA CARD CONTENT     VTAU 10={}          \n'
+        error = ' -------------------- DATA CARD ERROR -----     COMMAND NOT FOUND IN DICTIONARY\n'
+        good = vtau.format('2.9057E-13') + ' ***** DATA CARD CONTENT     \n' + hpc.format('1200.', '-3.0') * 2
         with tempfile.TemporaryDirectory() as tmp:
             log = Path(tmp) / 'simulate.log'
-            line = ' H P C - "chamber voltage" set to {}V, "threshold" to {}\n'
-            log.write_text('header\n' + line.format('1200.', '-3.0') * 2)
-            self.assertEqual(detector.check_simulation_log(PROFILES, task, log)['found'], [['1200.', '-3.0']])
-            for text in ('no HPC line\n', line.format('1300.', '-1.0'),
-                         line.format('1200.', '-3.0') + line.format('1300.', '-1.0')):
+            log.write_text('header\n' + good)
+            found = detector.check_simulation_log(PROFILES, task, log)
+            self.assertEqual([c['found'] for c in found['checks']], [[['1200.', '-3.0']], [['2.9057E-13']]])
+            for text in ('no HPC line\n' + vtau.format('2.9057E-13'), hpc.format('1300.', '-1.0') + vtau.format('2.9057E-13'),
+                         good + hpc.format('1300.', '-1.0'), hpc.format('1200.', '-3.0'),
+                         hpc.format('1200.', '-3.0') + vtau.format('3.0E-13'),
+                         hpc.format('1200.', '-3.0') + vtau.format('2.9057E-13') + error):
                 log.write_text(text)
                 with self.subTest(text=text), self.assertRaisesRegex(ValueError, 'patched detector mode'):
                     detector.check_simulation_log(PROFILES, task, log)
             self.assertIsNone(detector.check_simulation_log(PROFILES, {'point': {'detector': 'v94c', 'year': 1994}}, log))
+
+    def test_fadgen_options_only_1992(self):
+        for version, year in [('v92e', 1992), ('v93d', 1993), ('v94c', 1994), ('v95d', 1995)]:
+            with self.subTest(version=version):
+                args = detector.fadgen_args(PROFILES, {'point': {'detector': version, 'year': year}})
+                self.assertEqual(args, ['--tau-copies-as-documentation'] if year == 1992 else [])
+        self.assertIn("\"${@:2}\" events.hepmc3 my_events.fadgen", (PRODUCTION / 'runtime.sh').read_text())
 
     def test_invalid_year_and_version_rejected(self):
         for version, year in [('v94c', 1993), ('v92e', 1991), ('unknown', 1994)]:

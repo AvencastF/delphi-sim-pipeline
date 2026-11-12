@@ -221,6 +221,7 @@ Every key4hep generator and any external HepMC3 producer funnels through them.
 
 ```bash
 hepmc2fadgen <input.hepmc> [output]      # output default: the literal "fort.26" (in CWD)
+hepmc2fadgen --tau-copies-as-documentation <input.hepmc> [output]   # DELSIM v92e (1992) only
 ```
 
 - **Auto-detects the HepMC3 ASCII variant** via HepMC3's `deduce_reader()` — handles both
@@ -250,6 +251,14 @@ then a trailing `int record_size`. `record_size = 4 + N*60`. The file ends with 
     vertex** — every production made before 2026-09 (pythia8, sherpa, vincia, the flavour-split
     pythia8_bb/cc streams) has zero B/D/τ decay length in SIM for this reason.
   - **Everything else** (HepMC3 beam=4, partons, Z, documentation) → **`K=21`**.
+  - **`--tau-copies-as-documentation`** (1992/v92e only, passed from the detector profile's
+    `fadgen_options`): a τ whose kept daughters include a τ of the same PDG id (an FSR/recoil copy)
+    is written `K=21`, so only the last τ of each chain is `K=11`. v92e has no `LUDECV` and redraws a
+    flight segment for every `K=11` entry, so each copy added a segment (1992 τ decay length 1.50× the
+    generator's) and FSR photons started at a copy's displaced vertex. v92e keeps the `K=21` SH bank as
+    the parent link but lifts no ST bank for it, so the copy's daughters start at the nearest ancestor
+    vertex (the primary one for Z→ττ). Not used for v93d+ (with `LUDECV` the copies have zero length,
+    and the record must stay byte-identical).
   - **Critical caveat:** HepMC3 "decayed" (status 2) must **NOT** be mapped to LUJETS `K=2`. In
     JETSET `K(,1)=2` means "final, last of a colour singlet" (a *tracked* code); mislabeling a
     decayed Z/parton as 2 makes DELSIM reject the whole event (reads 0 input events). HepMC3 status
