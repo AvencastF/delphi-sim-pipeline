@@ -78,7 +78,11 @@ class YearSetupTests(unittest.TestCase):
    def name(point):
     cmd=node_runtime.container_command(Path('/scratch')/point/'validation',{'site':site},7)
     return cmd[cmd.index('--name')+1]
-   self.assertEqual(name('1994_91p2'),'long-123-node-nid-test')
+   # Point and tag in every name: two campaigns in one allocation cannot collide.
+   self.assertEqual(name('1994_91p2'),'long-123-node-nid-test-1994_91p2-validation')
+   self.assertNotEqual(name('1993_91p2'),name('1995_91p2'))
+   cmd=node_runtime.container_command(Path('/scratch/1994_91p2/other'),{'site':site},7)
+   self.assertNotEqual(cmd[cmd.index('--name')+1],name('1994_91p2'))
    site['detector_validation']=True
    self.assertNotEqual(name('1993_91p2'),name('1995_91p2'))
  def test_validation_claims_work_after_environment_setup(self):

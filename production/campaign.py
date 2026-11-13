@@ -187,6 +187,14 @@ def selected_weights(weights_path,events_path):
  if any(i not in weights for i in ids):raise ValueError('Converted event has no generator weight')
  return [weights[i] for i in ids],ids
 
+def tail_truncation(requested,converted,missing,log):
+ # DELSIM can STOP with exit code 0 mid-file; internal ID gaps (memory skips) are accounted separately.
+ short=requested-converted-len(missing)
+ if short<=0:return None
+ text=P(log).read_text(errors='replace') if P(log).is_file() else ''
+ return {'simulation_requested':requested,'converted':converted,'internal_id_gaps':len(missing),'missing_tail_events':short,
+         'log_stop_lines':[line.strip() for line in re.findall(r'^.*(?:FATAL|\bSTOP\b).*$',text,re.M)][:5]}
+
 def run_task(root,t):
  w=root/'work'/t['id'];w.mkdir(exist_ok=False)
  if NODE_ENVIRONMENTS is not None:(w/'tmp').mkdir()
@@ -231,7 +239,10 @@ def run_task(root,t):
   if audit['fadgen_slot_comparable_events']!=audit['events'] or audit['max_momentum_difference_gev']>1e-6:raise ValueError('FADGEN/ROOT truth identity mismatch')
   weights,event_ids=selected_weights(w/'event-weights.csv',w/'audit/converted-events.csv')
   result['event_selection']={'converted_event_ids':event_ids,'missing_ids_before_last_output':sorted(set(range(1,max(event_ids)+1))-set(event_ids))}
-  result['requires_event_loss_review']=bool(result['event_selection']['missing_ids_before_last_output'])
+  missing=result['event_selection']['missing_ids_before_last_output']
+  tail=tail_truncation(t['simulated_requested'],audit['events'],missing,root/'logs'/(t['id']+'-simulate.log'))
+  if tail:result['tail_truncation']=tail
+  result['requires_event_loss_review']=bool(missing or tail)
   result['counts']={'requested_generated':t['generated_requested'],'generated':g['generated'],'simulation_requested':t['simulated_requested'],'reconstructed':audit['events'],'converted':audit['events']}
   result['simulated_sumw']=sum(weights);result['simulated_sumw2']=sum(x*x for x in weights)
   result['outputs']={name:{'sha256':digest(w/name),'bytes':(w/name).stat().st_size} for name in set(['simana.ldst','events.edm4hep.root','longdst.des','simulation.title','event-weights.csv','events.hepmc3']+campaign_plan(root)['site'].get('retained_files',[]))}

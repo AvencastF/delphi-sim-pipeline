@@ -1,5 +1,7 @@
 """Local preparation and actual claim-queue contracts; no compute or IDs reserved."""
+import contextlib
 import heapq
+import io
 import json
 from pathlib import Path
 import tempfile
@@ -45,14 +47,40 @@ class FullYearTests(unittest.TestCase):
      self.assertIsNotNone(task,'Actual queue skipped an estimated task')
      claimed.append(task['id']);heapq.heappush(q,(time+task['estimated_seconds']*(0.7 if worker%2 else 1),worker))
    self.assertEqual(set(claimed),set(j['task_ids']))
+ def test_time_budget_skip_leaves_record_without_claiming(self):
+  tasks=[dict(id='000001',estimated_seconds=900),dict(id='000002',estimated_seconds=100)]
+  with tempfile.TemporaryDirectory() as tmp,contextlib.redirect_stdout(io.StringIO()) as out:
+   r=Path(tmp);(r/'claims').mkdir();(r/'results').mkdir()
+   task=node_runtime.claim_next(r,tasks,0,500,{'job':'fixture'})
+   self.assertEqual(task['id'],'000002')  # unchanged queue order: the large chunk is passed
+   self.assertFalse((r/'claims/000001').exists())
+   record=campaign.read(node_runtime.time_budget_skip(r,'000001'))
+   self.assertEqual((record['remaining_seconds'],record['estimated_seconds']),(500,900))
+   self.assertIn('skipped chunk 000001',out.getvalue())
+   self.assertFalse(node_runtime.time_budget_skip(r,'000002').exists())
+ def test_tail_truncation_flags_short_chunks(self):
+  with tempfile.TemporaryDirectory() as tmp:
+   log=Path(tmp)/'simulate.log'
+   log.write_text(' SXSDK: FATAL error: including generator comment or decay for generator track 7\n normal line\n HPC - WRONG DELPHI CODE - STOP 24.0\n')
+   tail=campaign.tail_truncation(900,140,[],log)
+   self.assertEqual(tail['missing_tail_events'],760)
+   self.assertEqual(len(tail['log_stop_lines']),2)
+   # Recorded 2026-11-10 truncated 1992 Z_qq files (converted, internal ID gaps); 900 requested.
+   for converted,gaps in [(434,0),(444,1),(140,0),(577,0),(812,0),(633,1),(682,0),(231,0)]:
+    self.assertGreater(campaign.tail_truncation(900,converted,list(range(gaps)),log)['missing_tail_events'],0)
+   # Explained internal gaps (memory skips) are not tail losses: 1992 001443, 1993 000384, spin-polm1 000847.
+   for converted,gaps in [(899,3),(899,1),(899,1),(900,0)]:
+    self.assertIsNone(campaign.tail_truncation(900,converted,list(range(gaps)),Path(tmp)/'absent.log'))
  def test_tail_uses_fewer_nodes_and_shorter_walltime(self):
   tasks=[dict(estimated_seconds=500) for _ in range(40)]
   j=fleet.pack_year_jobs(tasks,dict(nodes_per_job=4,workers_per_node=128,minutes=360,job_overhead_seconds=1800),1800)[0]
   self.assertEqual(j['nodes'],1);self.assertLess(j['minutes'],360)
  def test_build_identity_matches_verified_receipt(self):
+  # The receipt of the configured build: docs/BUILD_<build_root name>.json.
   site=fleet.read(ROOT/'long_production/configs/production.json')
-  expected=fleet.read(ROOT/'long_production/docs/FULL_PRODUCTION_SYNC_20261013.json')['build']['identity']
-  self.assertEqual(build_campaign.identity(ROOT/'delphi-sim-pipeline',ROOT/'delphi-edm4hep',site),expected)
+  receipt=fleet.read(ROOT/'long_production/docs'/('BUILD_'+Path(site['build_root']).name+'.json'))['build']
+  self.assertEqual(receipt['root'],site['build_root']);self.assertTrue(receipt['verified'])
+  self.assertEqual(build_campaign.identity(ROOT/'delphi-sim-pipeline',ROOT/'delphi-edm4hep',site),receipt['identity'])
  def test_freeze_forwards_profile_and_frozen_source(self):
   import argparse
   helper=YearSetupTests()

@@ -18,7 +18,7 @@ def container_command(root, plan, workers):
     host = socket.gethostname()
     cpus = ','.join(str(n) for n in sorted(os.sched_getaffinity(0)))
     cmd = ['podman-hpc', 'run', '--rm', '--network=none', '--init',
-           '--name', 'long-{}-node-{}'.format(os.environ['SLURM_JOB_ID'], host)+(('-'+root.parent.name) if site.get('detector_validation') else ''),
+           '--name', 'long-{}-node-{}-{}-{}'.format(os.environ['SLURM_JOB_ID'], host, root.parent.name, root.name),
            '--hostname', host, '--cpuset-cpus='+cpus, '--entrypoint', '/usr/bin/python3',
            '-v', '/cvmfs:/cvmfs:ro', '-v', str(root)+':'+str(root)+':ro',
            '-v', str(root/'source/sim')+':/sim:ro',
@@ -76,6 +76,11 @@ def environments(site):
             'simulate':legacy, 'convert':conversion}
 
 
+def time_budget_skip(root, ident):
+    # Beside, not inside, claims/<id>: a skipped task is never claimed.
+    return root/'claims'/(ident+'.skipped-time-budget.json')
+
+
 def claim_next(root, tasks, job_index, remaining, owner):
     # Lock a stable inode, then reopen the cursor and replace it atomically.
     # Append + truncate on a shared filesystem can leave NUL-filled holes.
@@ -91,6 +96,12 @@ def claim_next(root, tasks, job_index, remaining, owner):
             task = tasks[index]
             index += 1
             if remaining < float(task.get('estimated_seconds', 120))+60:
+                # The cursor passes this task for good: leave a trace for job-check.
+                record = dict(owner, task=task['id'], time=time.time(), remaining_seconds=remaining,
+                              estimated_seconds=float(task.get('estimated_seconds', 120)), claim_margin_seconds=60)
+                c.write(time_budget_skip(root, task['id']), record)
+                print('Time budget: skipped chunk {} ({:.0f} s estimate + 60 s margin > {:.0f} s remaining)'.format(
+                    task['id'], record['estimated_seconds'], remaining), flush=True)
                 continue
             if (root/'results'/(task['id']+'.json')).exists():
                 continue
